@@ -22,7 +22,6 @@ const (
 	PopupWidth             = 70 // Consistent width for all popup dialogs
 
 	// Viewport layout
-	// Viewport layout
 	CardHeight       = 2  // Compact rows for cyberpunk theme
 	HeaderHeight     = 8  // Logo + Graph height
 	FilePickerHeight = 12 // Height for file picker display
@@ -30,6 +29,8 @@ const (
 	// Channel Buffers - use consolidated constant from downloader
 	ProgressChannelBuffer = types.ProgressChannelBuffer
 
-	// Units - use consolidated constant from downloader
-	Megabyte = types.Megabyte
+	// Units - use consolidated constants from downloader
+	KB = types.KB
+	MB = types.MB
+	GB = types.GB
 )

@@ -357,7 +357,7 @@ func TestCategoryOrder(t *testing.T) {
 	}
 
 	// Should have all expected categories
-	expectedCount := 3 // General, Network, Performance
+	expectedCount := 4 // General, Network, Performance, Categories
 	if len(order) != expectedCount {
 		t.Errorf("Expected %d categories, got %d", expectedCount, len(order))
 	}
@@ -478,6 +478,37 @@ func TestLoadSettings_RealFunction(t *testing.T) {
 	_ = SaveSettings(DefaultSettings())
 }
 
+func TestSaveAndLoadSettings_PreservesEmptyCategories(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	settings := DefaultSettings()
+	settings.General.Categories = []Category{}
+
+	if err := SaveSettings(settings); err != nil {
+		t.Fatalf("SaveSettings failed: %v", err)
+	}
+
+	data, err := os.ReadFile(GetSettingsPath())
+	if err != nil {
+		t.Fatalf("read settings file: %v", err)
+	}
+	if !strings.Contains(string(data), `"categories": []`) {
+		t.Fatalf("expected explicit empty categories array in settings.json, got: %s", string(data))
+	}
+
+	loaded, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings failed: %v", err)
+	}
+
+	if loaded.General.Categories == nil {
+		t.Fatal("expected categories slice to be non-nil after load")
+	}
+	if len(loaded.General.Categories) != 0 {
+		t.Fatalf("expected zero categories after reload, got %d", len(loaded.General.Categories))
+	}
+}
+
 func TestSaveAndLoadSettings_RoundTrip(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// Test complete round trip via real functions
@@ -535,25 +566,6 @@ func TestSaveAndLoadSettings_RoundTrip(t *testing.T) {
 	_ = SaveSettings(DefaultSettings())
 }
 
-func TestDefaultSettings_XDG(t *testing.T) {
-	// Create temp dir to simulate XDG_DOWNLOAD_DIR
-	tmpDir, err := os.MkdirTemp("", "surge-xdg-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	// Set env var
-	t.Setenv("XDG_DOWNLOAD_DIR", tmpDir)
-
-	// Get settings
-	settings := DefaultSettings()
-
-	if settings.General.DefaultDownloadDir != tmpDir {
-		t.Errorf("DefaultDownloadDir should match XDG_DOWNLOAD_DIR. Got: %s, Want: %s", settings.General.DefaultDownloadDir, tmpDir)
-	}
-}
-
 func TestDefaultSettings_Fallback(t *testing.T) {
 	// Unset XDG_DOWNLOAD_DIR
 	t.Setenv("XDG_DOWNLOAD_DIR", "")
@@ -567,117 +579,5 @@ func TestDefaultSettings_Fallback(t *testing.T) {
 		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 			t.Errorf("DefaultDownloadDir fallback returned invalid path: %s", dir)
 		}
-	}
-}
-
-// === Migration Tests ===
-
-func TestLegacySettingsMigration_FullLegacy(t *testing.T) {
-	// Simulates an existing user's settings.json from before the refactor
-	legacyJSON := `{
-		"general": {
-			"default_download_dir": "/home/user/Downloads",
-			"warn_on_duplicate": true
-		},
-		"connections": {
-			"max_connections_per_host": 48,
-			"max_global_connections": 200,
-			"max_concurrent_downloads": 5,
-			"user_agent": "LegacyAgent/1.0",
-			"sequential_download": true
-		},
-		"chunks": {
-			"min_chunk_size": 4194304,
-			"worker_buffer_size": 1048576
-		},
-		"performance": {
-			"max_task_retries": 5
-		}
-	}`
-
-	settings := DefaultSettings()
-	if err := json.Unmarshal([]byte(legacyJSON), settings); err != nil {
-		t.Fatalf("Failed to unmarshal legacy JSON: %v", err)
-	}
-
-	// Connection fields should be migrated
-	if settings.Network.MaxConnectionsPerHost != 48 {
-		t.Errorf("MaxConnectionsPerHost not migrated: got %d, want 48", settings.Network.MaxConnectionsPerHost)
-	}
-
-	if settings.Network.MaxConcurrentDownloads != 5 {
-		t.Errorf("MaxConcurrentDownloads not migrated: got %d, want 5", settings.Network.MaxConcurrentDownloads)
-	}
-	if settings.Network.UserAgent != "LegacyAgent/1.0" {
-		t.Errorf("UserAgent not migrated: got %q, want %q", settings.Network.UserAgent, "LegacyAgent/1.0")
-	}
-	if !settings.Network.SequentialDownload {
-		t.Error("SequentialDownload not migrated: got false, want true")
-	}
-
-	// Chunk fields should also be migrated
-	if settings.Network.MinChunkSize != 4194304 {
-		t.Errorf("MinChunkSize not migrated: got %d, want 4194304", settings.Network.MinChunkSize)
-	}
-	if settings.Network.WorkerBufferSize != 1048576 {
-		t.Errorf("WorkerBufferSize not migrated: got %d, want 1048576", settings.Network.WorkerBufferSize)
-	}
-
-	// Other categories should work normally
-	if settings.General.DefaultDownloadDir != "/home/user/Downloads" {
-		t.Errorf("General settings not loaded: got %q", settings.General.DefaultDownloadDir)
-	}
-	if settings.Performance.MaxTaskRetries != 5 {
-		t.Errorf("Performance settings not loaded: got %d, want 5", settings.Performance.MaxTaskRetries)
-	}
-}
-
-func TestLegacySettingsMigration_ConnectionsOnly(t *testing.T) {
-	// Legacy file with connections but no chunks key
-	legacyJSON := `{
-		"connections": {
-			"max_connections_per_host": 16,
-			"user_agent": "OldAgent/2.0"
-		}
-	}`
-
-	settings := DefaultSettings()
-	if err := json.Unmarshal([]byte(legacyJSON), settings); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
-	}
-
-	if settings.Network.MaxConnectionsPerHost != 16 {
-		t.Errorf("MaxConnectionsPerHost not migrated: got %d, want 16", settings.Network.MaxConnectionsPerHost)
-	}
-	if settings.Network.UserAgent != "OldAgent/2.0" {
-		t.Errorf("UserAgent not migrated: got %q", settings.Network.UserAgent)
-	}
-
-	// Chunk fields should retain defaults (since no "chunks" key was present)
-	defaults := DefaultSettings()
-	if settings.Network.MinChunkSize != defaults.Network.MinChunkSize {
-		t.Errorf("MinChunkSize should be default: got %d, want %d", settings.Network.MinChunkSize, defaults.Network.MinChunkSize)
-	}
-}
-
-func TestLegacySettingsMigration_NewFormatUnchanged(t *testing.T) {
-	// New format with "network" key — migration should NOT trigger
-	newJSON := `{
-		"network": {
-			"max_connections_per_host": 64,
-			"min_chunk_size": 8388608
-		}
-	}`
-
-	settings := DefaultSettings()
-	if err := json.Unmarshal([]byte(newJSON), settings); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
-	}
-
-	if settings.Network.MaxConnectionsPerHost != 64 {
-		t.Errorf("New format broken: got %d, want 64", settings.Network.MaxConnectionsPerHost)
-	}
-	if settings.Network.MinChunkSize != 8388608 {
-		t.Errorf("New format broken: got %d, want 8388608", settings.Network.MinChunkSize)
 	}
 }

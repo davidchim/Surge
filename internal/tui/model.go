@@ -37,6 +37,7 @@ const (
 	BatchConfirmState                         // BatchConfirmState is 10
 	UpdateAvailableState                      // UpdateAvailableState is 11
 	URLUpdateState                            // URLUpdateState is 12
+	CategoryManagerState                      // CategoryManagerState is 13
 )
 
 const (
@@ -100,12 +101,13 @@ type RootModel struct {
 	historyCursor  int
 
 	// Duplicate detection
-	pendingURL      string   // URL pending confirmation
-	pendingPath     string   // Path pending confirmation
-	pendingFilename string   // Filename pending confirmation
-	pendingMirrors  []string // Mirrors pending confirmation
-	pendingHeaders  map[string]string
-	duplicateInfo   string // Info about the duplicate
+	pendingURL           string // URL pending confirmation
+	pendingPath          string // Path pending confirmation
+	pendingIsDefaultPath bool
+	pendingFilename      string   // Filename pending confirmation
+	pendingMirrors       []string // Mirrors pending confirmation
+	pendingHeaders       map[string]string
+	duplicateInfo        string // Info about the duplicate
 
 	// Graph Data
 	SpeedHistory           []float64 // Stores the last ~60 ticks of speed data
@@ -140,6 +142,15 @@ type RootModel struct {
 
 	// URL Refresh
 	urlUpdateInput textinput.Model // Text input for updating URL
+
+	// Category manager
+	categoryFilter  string             // Dashboard filter ("" = all)
+	catMgrCursor    int                // Selected category index
+	catMgrEditing   bool               // Whether editing a category
+	catMgrEditField int                // 0=Name, 1=Description, 2=Pattern, 3=Path
+	catMgrInputs    [4]textinput.Model // Inputs for Name, Description, Pattern, Path
+	catMgrIsNew     bool               // Whether adding a new category
+	catMgrFileBrowsing bool            // Whether browsing for a category path
 
 	// Keybindings
 	keys KeyMap
@@ -270,7 +281,7 @@ func InitialRootModel(serverPort int, currentVersion string, service core.Downlo
 				if s.AvgSpeed > 0 {
 					dm.Speed = s.AvgSpeed
 				} else if s.Speed > 0 {
-					dm.Speed = s.Speed * Megabyte
+					dm.Speed = s.Speed * float64(config.MB)
 				}
 				if s.Status == "completed" && s.TimeTaken > 0 {
 					dm.Elapsed = time.Duration(s.TimeTaken) * time.Millisecond
@@ -306,6 +317,27 @@ func InitialRootModel(serverPort int, currentVersion string, service core.Downlo
 	urlUpdateInput.Width = InputWidth
 	urlUpdateInput.Prompt = ""
 
+	// Initialize Category Manager inputs
+	catNameInput := textinput.New()
+	catNameInput.Placeholder = "Videos"
+	catNameInput.Width = 30
+	catNameInput.Prompt = ""
+
+	catDescInput := textinput.New()
+	catDescInput.Placeholder = "Video files (.mp4, .mkv)"
+	catDescInput.Width = 50
+	catDescInput.Prompt = ""
+
+	catPatternInput := textinput.New()
+	catPatternInput.Placeholder = "(?i)\\.(mp4|mkv)$"
+	catPatternInput.Width = 50
+	catPatternInput.Prompt = ""
+
+	catPathInput := textinput.New()
+	catPathInput.Placeholder = "/home/user/Videos"
+	catPathInput.Width = 50
+	catPathInput.Prompt = ""
+
 	m := RootModel{
 		downloads:             downloads,
 		inputs:                []textinput.Model{urlInput, mirrorsInput, pathInput, filenameInput},
@@ -322,6 +354,7 @@ func InitialRootModel(serverPort int, currentVersion string, service core.Downlo
 		SettingsInput:         settingsInput,
 		searchInput:           searchInput,
 		urlUpdateInput:        urlUpdateInput,
+		catMgrInputs:          [4]textinput.Model{catNameInput, catDescInput, catPatternInput, catPathInput},
 		keys:                  Keys,
 		ServerPort:            serverPort,
 		CurrentVersion:        currentVersion,
@@ -413,6 +446,13 @@ func (m RootModel) getFilteredDownloads() []*DownloadModel {
 			}
 		}
 
+		// Apply dashboard category filter.
+		if m.categoryFilter != "" && m.Settings != nil && m.Settings.General.CategoryEnabled {
+			if !m.matchesCategoryFilter(d) {
+				continue
+			}
+		}
+
 		// Apply search filter if query is set
 		if m.searchQuery != "" {
 			if !strings.Contains(strings.ToLower(d.FilenameLower), searchLower) {
@@ -423,6 +463,32 @@ func (m RootModel) getFilteredDownloads() []*DownloadModel {
 		filtered = append(filtered, d)
 	}
 	return filtered
+}
+
+func (m RootModel) matchesCategoryFilter(d *DownloadModel) bool {
+	filter := m.categoryFilter
+	if filter == "" {
+		return true
+	}
+
+	filename := strings.TrimSpace(d.Filename)
+	if filename == "" || filename == "Queued" {
+		if d.Destination != "" {
+			if destBase := strings.TrimSpace(filepath.Base(d.Destination)); strings.Contains(destBase, ".") {
+				filename = destBase
+			}
+		}
+	}
+	if filename == "" || filename == "Queued" {
+		filename = inferFilenameFromURL(d.URL)
+	}
+
+	cat, err := config.GetCategoryForFile(filename, m.Settings.General.Categories)
+	if filter == "Uncategorized" {
+		return err != nil || cat == nil
+	}
+
+	return err == nil && cat != nil && cat.Name == filter
 }
 
 // newFilepicker creates a fresh filepicker instance with consistent settings.

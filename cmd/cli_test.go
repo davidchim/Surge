@@ -341,8 +341,8 @@ func TestFormatSize_Table(t *testing.T) {
 	}{
 		{name: "zero", bytes: 0, want: "0 B"},
 		{name: "bytes", bytes: 512, want: "512 B"},
-		{name: "kb", bytes: 1024, want: "1.0 KB"},
-		{name: "kb-fraction", bytes: 1536, want: "1.5 KB"},
+		{name: "kb", bytes: 1024, want: "1.0 kB"},
+		{name: "kb-fraction", bytes: 1536, want: "1.5 kB"},
 		{name: "mb", bytes: 1024 * 1024, want: "1.0 MB"},
 	}
 
@@ -468,7 +468,11 @@ func TestPrintDownloads_FromDatabase_TableAndJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonOut), &infos); err != nil {
 		t.Fatalf("failed to decode json output: %v (out=%q)", err, jsonOut)
 	}
-	if len(infos) != 1 || infos[0].ID != entry.ID {
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 json entry, got %d: %+v", len(infos), infos)
+	}
+	got := infos[0]
+	if got.ID != entry.ID || got.Filename != entry.Filename || got.Status != entry.Status || got.Downloaded != entry.Downloaded || got.TotalSize != entry.TotalSize || got.Progress != 50 {
 		t.Fatalf("unexpected JSON payload: %+v", infos)
 	}
 }
@@ -480,8 +484,12 @@ func TestPrintDownloads_JSONEmpty(t *testing.T) {
 	out := captureStdout(t, func() {
 		printDownloads(true, "", "", false)
 	})
-	if strings.TrimSpace(out) != "[]" {
-		t.Fatalf("expected empty json array, got %q", strings.TrimSpace(out))
+	var infos []any
+	if err := json.Unmarshal([]byte(out), &infos); err != nil {
+		t.Fatalf("failed to parse json output: %v (out=%q)", err, out)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("expected empty json array, got %d entries: %+v", len(infos), infos)
 	}
 }
 
@@ -753,11 +761,7 @@ func TestProcessDownloads_RemoteAndLocal(t *testing.T) {
 
 func setupIsolatedCmdState(t *testing.T) {
 	t.Helper()
-	tempDir := t.TempDir()
-	t.Setenv("APPDATA", tempDir)
-	t.Setenv("USERPROFILE", tempDir)
-	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	t.Setenv("HOME", tempDir)
+	setupXDGEnvIsolation(t)
 
 	if err := config.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs failed: %v", err)
@@ -765,9 +769,6 @@ func setupIsolatedCmdState(t *testing.T) {
 
 	state.CloseDB()
 	state.Configure(filepath.Join(config.GetStateDir(), "surge.db"))
-	t.Cleanup(func() {
-		state.CloseDB()
-	})
 }
 
 func captureStdout(t *testing.T, fn func()) string {

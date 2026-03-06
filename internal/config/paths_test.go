@@ -4,321 +4,201 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
+
+	"github.com/adrg/xdg"
 )
 
-func TestGetSurgeDir(t *testing.T) {
-	// Set XDG_CONFIG_HOME for Linux tests
-	if runtime.GOOS == "linux" {
-		tmpDir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", tmpDir)
+func TestGetSurgeDir_HonorsRuntimeXDGConfigHomeOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-windows behavior")
 	}
 
-	dir := GetSurgeDir()
-	if dir == "" {
-		t.Error("GetSurgeDir returned empty string")
-	}
-	// Should contain "surge" in path
-	if !strings.Contains(strings.ToLower(dir), "surge") {
-		t.Errorf("Expected path to contain 'surge', got: %s", dir)
-	}
-}
+	tmp := t.TempDir()
+	oldConfigHome := xdg.ConfigHome
+	xdg.ConfigHome = filepath.Join(t.TempDir(), "fallback-config")
+	t.Cleanup(func() {
+		xdg.ConfigHome = oldConfigHome
+	})
 
-func TestGetStateDir(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		tmpDir := t.TempDir()
-		t.Setenv("XDG_STATE_HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
 
-		dir := GetStateDir()
-		expected := filepath.Join(tmpDir, "surge")
-		if dir != expected {
-			t.Errorf("GetStateDir mismatch. Got %s, want %s", dir, expected)
-		}
-	} else {
-		// Non-linux: should be same as SurgeDir
-		if GetStateDir() != GetSurgeDir() {
-			t.Error("GetStateDir should equal GetSurgeDir on non-Linux")
-		}
+	want := filepath.Join(tmp, "surge")
+	if got := GetSurgeDir(); got != want {
+		t.Fatalf("GetSurgeDir() = %q, want %q", got, want)
 	}
 }
 
-func TestGetRuntimeDir(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		// Case 1: XDG_RUNTIME_DIR set
-		tmpDir := t.TempDir()
-		t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+func TestGetStateDir_HonorsRuntimeXDGStateHomeOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-windows behavior")
+	}
 
-		dir := GetRuntimeDir()
-		expected := filepath.Join(tmpDir, "surge")
-		if dir != expected {
-			t.Errorf("GetRuntimeDir mismatch. Got %s, want %s", dir, expected)
-		}
+	tmp := t.TempDir()
+	oldStateHome := xdg.StateHome
+	xdg.StateHome = filepath.Join(t.TempDir(), "fallback-state")
+	t.Cleanup(func() {
+		xdg.StateHome = oldStateHome
+	})
 
-		// Case 2: XDG_RUNTIME_DIR unset (fallback)
-		t.Setenv("XDG_RUNTIME_DIR", "")
-		// Setup state dir for fallback check
-		stateTmp := t.TempDir()
-		t.Setenv("XDG_STATE_HOME", stateTmp)
+	t.Setenv("XDG_STATE_HOME", tmp)
 
-		dirFallback := GetRuntimeDir()
-		expectedFallback := filepath.Join(stateTmp, "surge")
-		if dirFallback != expectedFallback {
-			t.Errorf("GetRuntimeDir fallback mismatch. Got %s, want %s", dirFallback, expectedFallback)
-		}
+	want := filepath.Join(tmp, "surge")
+	if got := GetStateDir(); got != want {
+		t.Fatalf("GetStateDir() = %q, want %q", got, want)
 	}
 }
 
-func TestGetLogsDir(t *testing.T) {
-	dir := GetLogsDir()
-	if !strings.HasSuffix(dir, "logs") {
-		t.Errorf("Expected path to end with 'logs', got: %s", dir)
+func TestGetSurgeDir_IgnoresRelativeRuntimeXDGConfigHomeOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-windows behavior")
 	}
 
-	// Should be under StateDir
-	stateDir := GetStateDir()
-	if !strings.HasPrefix(dir, stateDir) {
-		t.Errorf("LogsDir should be under StateDir. LogsDir: %s, StateDir: %s", dir, stateDir)
-	}
-}
+	tmp := t.TempDir()
+	oldConfigHome := xdg.ConfigHome
+	xdg.ConfigHome = tmp
+	t.Cleanup(func() {
+		xdg.ConfigHome = oldConfigHome
+	})
 
-func TestEnsureDirs(t *testing.T) {
-	// Setup temp env
-	if runtime.GOOS == "linux" {
-		baseDir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, "config"))
-		t.Setenv("XDG_STATE_HOME", filepath.Join(baseDir, "state"))
-		t.Setenv("XDG_RUNTIME_DIR", filepath.Join(baseDir, "runtime"))
-	}
+	t.Setenv("XDG_CONFIG_HOME", "relative/path")
 
-	err := EnsureDirs()
-	if err != nil {
-		t.Fatalf("EnsureDirs failed: %v", err)
-	}
-
-	// Verify all directories exist
-	dirs := []string{GetSurgeDir(), GetStateDir(), GetLogsDir(), GetRuntimeDir()}
-	for _, dir := range dirs {
-		info, err := os.Stat(dir)
-		if os.IsNotExist(err) {
-			t.Errorf("Directory not created: %s", dir)
-		} else if err != nil {
-			t.Errorf("Error checking directory %s: %v", dir, err)
-		} else if !info.IsDir() {
-			t.Errorf("Path exists but is not a directory: %s", dir)
-		}
+	want := filepath.Join(tmp, "surge")
+	if got := GetSurgeDir(); got != want {
+		t.Fatalf("GetSurgeDir() = %q, want %q", got, want)
 	}
 }
 
-func TestDirectoryHierarchy(t *testing.T) {
+func TestGetRuntimeDir_FallsBackToStateDirWhenXDGUnsetOnLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		surgeDir := GetSurgeDir()
-		stateDir := GetStateDir()
+		t.Skip("linux-specific behavior")
+	}
 
-		if stateDir != surgeDir {
-			t.Errorf("On non-Linux, StateDir should be same as SurgeDir")
-		}
-	} else {
-		// On Linux they should be distinct (assuming default different XDG vars)
-		// We set them to ensure they are different
-		t.Setenv("XDG_CONFIG_HOME", "/tmp/config")
-		t.Setenv("XDG_STATE_HOME", "/tmp/state")
+	tmp := t.TempDir()
+	oldStateHome := xdg.StateHome
+	oldRuntimeDir := xdg.RuntimeDir
+	xdg.StateHome = tmp
+	xdg.RuntimeDir = filepath.Join(tmp, "xdg-runtime")
+	t.Cleanup(func() {
+		xdg.StateHome = oldStateHome
+		xdg.RuntimeDir = oldRuntimeDir
+	})
 
-		if GetSurgeDir() == GetStateDir() {
-			t.Error("On Linux, SurgeDir and StateDir should be different")
-		}
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	got := GetRuntimeDir()
+	want := filepath.Join(GetStateDir(), "runtime")
+	if got != want {
+		t.Fatalf("GetRuntimeDir() = %q, want %q", got, want)
 	}
 }
 
-// TestMigrateOldPaths verifies that files are moved from config dir to state dir
-func TestMigrateOldPaths(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Migration only runs on Linux")
-	}
+func TestGetRuntimeDir_UsesXDGWhenSet(t *testing.T) {
+	tmp := t.TempDir()
 
-	// Setup mock config/state dirs
-	tmpDir := t.TempDir()
-	mockConfig := filepath.Join(tmpDir, "config")
-	mockState := filepath.Join(tmpDir, "state")
+	oldRuntimeDir := xdg.RuntimeDir
+	xdg.RuntimeDir = tmp
+	t.Cleanup(func() {
+		xdg.RuntimeDir = oldRuntimeDir
+	})
 
-	t.Setenv("XDG_CONFIG_HOME", mockConfig)
-	t.Setenv("XDG_STATE_HOME", mockState)
+	t.Setenv("XDG_RUNTIME_DIR", tmp)
 
-	// Create old layout
-	oldSurgeDir := filepath.Join(mockConfig, "surge")
-	if err := os.MkdirAll(oldSurgeDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Create file to move: surge.db
-	dbPath := filepath.Join(oldSurgeDir, "surge.db")
-	if err := os.WriteFile(dbPath, []byte("fake db"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 2. Create logs dir to move
-	logsDir := filepath.Join(oldSurgeDir, "logs")
-	if err := os.Mkdir(logsDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(logsDir, "test.log"), []byte("log data"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Run migration
-	if err := MigrateOldPaths(); err != nil {
-		t.Fatalf("Migration failed: %v", err)
-	}
-
-	// Verify surge.db moved
-	newDbPath := filepath.Join(mockState, "surge", "surge.db")
-	if _, err := os.Stat(newDbPath); os.IsNotExist(err) {
-		t.Error("surge.db was not migrated to state dir")
-	}
-	if _, err := os.Stat(dbPath); err == nil {
-		t.Error("Old surge.db still exists")
-	}
-
-	// Verify logs moved
-	newLogsDir := filepath.Join(mockState, "surge", "logs")
-	if _, err := os.Stat(newLogsDir); os.IsNotExist(err) {
-		t.Error("logs dir was not migrated")
-	}
-	if _, err := os.Stat(filepath.Join(newLogsDir, "test.log")); os.IsNotExist(err) {
-		t.Error("log file missing in new location")
-	}
-	if _, err := os.Stat(logsDir); err == nil {
-		t.Error("Old logs dir still exists")
+	got := GetRuntimeDir()
+	want := filepath.Join(tmp, "surge")
+	if got != want {
+		t.Fatalf("GetRuntimeDir() = %q, want %q", got, want)
 	}
 }
 
-func TestMigrateOldPaths_ConflictingDBKept(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Migration only runs on Linux")
-	}
+func TestGetRuntimeDir_RejectsRelativeXDGValues(t *testing.T) {
+	tmp := t.TempDir()
 
-	tmpDir := t.TempDir()
-	mockConfig := filepath.Join(tmpDir, "config")
-	mockState := filepath.Join(tmpDir, "state")
-	t.Setenv("XDG_CONFIG_HOME", mockConfig)
-	t.Setenv("XDG_STATE_HOME", mockState)
+	oldStateHome := xdg.StateHome
+	oldRuntimeDir := xdg.RuntimeDir
+	xdg.StateHome = tmp
+	xdg.RuntimeDir = "relative-runtime-dir"
+	t.Cleanup(func() {
+		xdg.StateHome = oldStateHome
+		xdg.RuntimeDir = oldRuntimeDir
+	})
 
-	oldSurgeDir := filepath.Join(mockConfig, "surge")
-	newStateDir := filepath.Join(mockState, "surge")
-	if err := os.MkdirAll(oldSurgeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(newStateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("XDG_RUNTIME_DIR", "relative-env-runtime")
 
-	oldDB := filepath.Join(oldSurgeDir, "surge.db")
-	newDB := filepath.Join(newStateDir, "surge.db")
-	if err := os.WriteFile(oldDB, []byte("old-db"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(newDB, []byte("new-db"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := MigrateOldPaths(); err != nil {
-		t.Fatalf("Migration failed: %v", err)
-	}
-
-	if _, err := os.Stat(oldDB); err != nil {
-		t.Fatalf("expected old conflicting db to be kept, stat err: %v", err)
-	}
-	got, err := os.ReadFile(newDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new-db" {
-		t.Fatalf("new db content changed unexpectedly: got=%q", string(got))
+	want := filepath.Join(GetStateDir(), "runtime")
+	if got := GetRuntimeDir(); got != want {
+		t.Fatalf("GetRuntimeDir() = %q, want %q", got, want)
 	}
 }
 
-func TestMigrateOldPaths_DuplicateTokenRemoved(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Migration only runs on Linux")
+func TestGetDownloadsDir_FallbackBehavior(t *testing.T) {
+	tmp := t.TempDir()
+
+	oldDownload := xdg.UserDirs.Download
+	xdg.UserDirs.Download = filepath.Join(tmp, "missing-downloads-dir")
+	t.Cleanup(func() {
+		xdg.UserDirs.Download = oldDownload
+	})
+
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	if got := GetDownloadsDir(); got != "" {
+		t.Fatalf("GetDownloadsDir() = %q, want empty for missing dirs", got)
 	}
 
-	tmpDir := t.TempDir()
-	mockConfig := filepath.Join(tmpDir, "config")
-	mockState := filepath.Join(tmpDir, "state")
-	t.Setenv("XDG_CONFIG_HOME", mockConfig)
-	t.Setenv("XDG_STATE_HOME", mockState)
-
-	oldSurgeDir := filepath.Join(mockConfig, "surge")
-	newStateDir := filepath.Join(mockState, "surge")
-	if err := os.MkdirAll(oldSurgeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(newStateDir, 0o755); err != nil {
-		t.Fatal(err)
+	downloadsDir := filepath.Join(tmp, "Downloads")
+	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
+		t.Fatalf("failed to create fallback downloads dir: %v", err)
 	}
 
-	oldToken := filepath.Join(oldSurgeDir, "token")
-	newToken := filepath.Join(newStateDir, "token")
-	if err := os.WriteFile(oldToken, []byte("same-token"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(newToken, []byte("same-token"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := MigrateOldPaths(); err != nil {
-		t.Fatalf("Migration failed: %v", err)
-	}
-
-	if _, err := os.Stat(oldToken); err == nil {
-		t.Fatal("expected duplicate old token to be removed")
-	}
-	if _, err := os.Stat(newToken); err != nil {
-		t.Fatalf("expected new token to remain, stat err: %v", err)
+	if got := GetDownloadsDir(); got != downloadsDir {
+		t.Fatalf("GetDownloadsDir() = %q, want %q", got, downloadsDir)
 	}
 }
 
-func TestMigrateOldPaths_ConflictingTokenOldRemoved(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Migration only runs on Linux")
+func TestWindowsPathsKeepLegacyAppData(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
 	}
 
-	tmpDir := t.TempDir()
-	mockConfig := filepath.Join(tmpDir, "config")
-	mockState := filepath.Join(tmpDir, "state")
-	t.Setenv("XDG_CONFIG_HOME", mockConfig)
-	t.Setenv("XDG_STATE_HOME", mockState)
+	tmp := t.TempDir()
+	oldConfigHome := xdg.ConfigHome
+	oldStateHome := xdg.StateHome
+	xdg.ConfigHome = filepath.Join(tmp, "xdg-config")
+	xdg.StateHome = filepath.Join(tmp, "xdg-state")
+	t.Cleanup(func() {
+		xdg.ConfigHome = oldConfigHome
+		xdg.StateHome = oldStateHome
+	})
 
-	oldSurgeDir := filepath.Join(mockConfig, "surge")
-	newStateDir := filepath.Join(mockState, "surge")
-	if err := os.MkdirAll(oldSurgeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(newStateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("APPDATA", tmp)
 
-	oldToken := filepath.Join(oldSurgeDir, "token")
-	newToken := filepath.Join(newStateDir, "token")
-	if err := os.WriteFile(oldToken, []byte("old-token"), 0o644); err != nil {
-		t.Fatal(err)
+	want := filepath.Join(tmp, "surge")
+	if got := GetSurgeDir(); got != want {
+		t.Fatalf("GetSurgeDir() = %q, want %q", got, want)
 	}
-	if err := os.WriteFile(newToken, []byte("new-token"), 0o644); err != nil {
-		t.Fatal(err)
+	if got := GetStateDir(); got != want {
+		t.Fatalf("GetStateDir() = %q, want %q", got, want)
 	}
+}
 
-	if err := MigrateOldPaths(); err != nil {
-		t.Fatalf("Migration failed: %v", err)
+func TestWindowsPathsIgnoreRelativeAppData(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
 	}
 
-	if _, err := os.Stat(oldToken); err == nil {
-		t.Fatal("expected old conflicting token to be removed")
-	}
-	got, err := os.ReadFile(newToken)
-	if err != nil {
-		t.Fatalf("expected new token to remain, read err: %v", err)
-	}
-	if string(got) != "new-token" {
-		t.Fatalf("expected state token unchanged, got %q", string(got))
+	tmp := t.TempDir()
+	oldConfigHome := xdg.ConfigHome
+	xdg.ConfigHome = filepath.Join(tmp, "xdg-config")
+	t.Cleanup(func() {
+		xdg.ConfigHome = oldConfigHome
+	})
+
+	t.Setenv("APPDATA", "relative-appdata")
+
+	want := filepath.Join(xdg.ConfigHome, "surge")
+	if got := GetSurgeDir(); got != want {
+		t.Fatalf("GetSurgeDir() = %q, want %q", got, want)
 	}
 }

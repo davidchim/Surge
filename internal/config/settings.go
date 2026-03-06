@@ -16,11 +16,13 @@ type Settings struct {
 
 // GeneralSettings contains application behavior settings.
 type GeneralSettings struct {
-	DefaultDownloadDir string `json:"default_download_dir"`
-	WarnOnDuplicate    bool   `json:"warn_on_duplicate"`
-	ExtensionPrompt    bool   `json:"extension_prompt"`
-	AutoResume         bool   `json:"auto_resume"`
-	SkipUpdateCheck    bool   `json:"skip_update_check"`
+	DefaultDownloadDir string     `json:"default_download_dir"`
+	WarnOnDuplicate    bool       `json:"warn_on_duplicate"`
+	ExtensionPrompt    bool       `json:"extension_prompt"`
+	AutoResume         bool       `json:"auto_resume"`
+	SkipUpdateCheck    bool       `json:"skip_update_check"`
+	CategoryEnabled    bool       `json:"category_enabled"`
+	Categories         []Category `json:"categories"`
 
 	ClipboardMonitor  bool `json:"clipboard_monitor"`
 	Theme             int  `json:"theme"`
@@ -105,6 +107,9 @@ func GetSettingsMetadata() map[string][]SettingMeta {
 			{Key: "theme", Label: "App Theme", Description: "UI Theme (System, Light, Dark).", Type: "int"},
 			{Key: "log_retention_count", Label: "Log Retention Count", Description: "Number of recent log files to keep.", Type: "int"},
 		},
+		"Categories": {
+			{Key: "category_enabled", Label: "Manage Categories", Description: "Sort downloads into subfolders by file type. Press Enter to open Category Manager.", Type: "bool"},
+		},
 		"Network": {
 			{Key: "max_connections_per_host", Label: "Max Connections/Host", Description: "Maximum concurrent connections per host (1-64).", Type: "int"},
 			{Key: "max_concurrent_downloads", Label: "Max Concurrent Downloads", Description: "Maximum number of downloads running at once (1-10). Requires restart.", Type: "int"},
@@ -126,34 +131,18 @@ func GetSettingsMetadata() map[string][]SettingMeta {
 
 // CategoryOrder returns the order of categories for UI tabs.
 func CategoryOrder() []string {
-	return []string{"General", "Network", "Performance"}
+	return []string{"General", "Network", "Performance", "Categories"}
 }
 
 const (
-	KB = 1024
-	MB = 1024 * KB
+	KB = 1 << 10
+	MB = 1 << 20
 )
 
 // DefaultSettings returns a new Settings instance with sensible defaults.
 func DefaultSettings() *Settings {
-	homeDir, _ := os.UserHomeDir()
 
-	defaultDir := ""
-
-	// Check XDG_DOWNLOAD_DIR
-	if xdgDir := os.Getenv("XDG_DOWNLOAD_DIR"); xdgDir != "" {
-		if info, err := os.Stat(xdgDir); err == nil && info.IsDir() {
-			defaultDir = xdgDir
-		}
-	}
-
-	// Check ~/Downloads if not set
-	if defaultDir == "" && homeDir != "" {
-		downloadsDir := filepath.Join(homeDir, "Downloads")
-		if info, err := os.Stat(downloadsDir); err == nil && info.IsDir() {
-			defaultDir = downloadsDir
-		}
-	}
+	defaultDir := GetDownloadsDir()
 
 	return &Settings{
 		General: GeneralSettings{
@@ -161,6 +150,8 @@ func DefaultSettings() *Settings {
 			WarnOnDuplicate:    true,
 			ExtensionPrompt:    false,
 			AutoResume:         false,
+			CategoryEnabled:    false,
+			Categories:         DefaultCategories(),
 
 			ClipboardMonitor:  true,
 			Theme:             ThemeAdaptive,

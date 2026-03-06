@@ -14,6 +14,7 @@ import (
 
 	"github.com/surge-downloader/surge/internal/engine/events"
 	"github.com/surge-downloader/surge/internal/engine/types"
+	"github.com/surge-downloader/surge/internal/utils"
 )
 
 // RemoteDownloadService implements DownloadService for a remote daemon.
@@ -67,7 +68,7 @@ func (s *RemoteDownloadService) doRequest(method, path string, body interface{})
 	if resp.StatusCode >= 400 {
 		defer func() { _ = resp.Body.Close() }()
 		// Limit error body read to 1KB to prevent DoS
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, types.KB))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -302,21 +303,22 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan interfac
 			}
 		}
 
-			if eventType == "" || len(dataLines) == 0 {
-				continue
-			}
-			jsonData := strings.Join(dataLines, "\n")
+		if eventType == "" || len(dataLines) == 0 {
+			continue
+		}
+		jsonData := strings.Join(dataLines, "\n")
 
-			msg, ok, err := events.DecodeSSEMessage(eventType, []byte(jsonData))
-			if err != nil {
-				continue
-			}
-			if !ok {
-				continue
-			}
+		msg, ok, err := events.DecodeSSEMessage(eventType, []byte(jsonData))
+		if err != nil {
+			utils.Debug("SSE decode error for event=%s payload_bytes=%d: %v", eventType, len(jsonData), err)
+			continue
+		}
+		if !ok {
+			continue
+		}
 
-			// Non-blocking send
-			select {
+		// Non-blocking send
+		select {
 		case ch <- msg:
 		default:
 			// Drop message if channel is full to prevent blocking the reader

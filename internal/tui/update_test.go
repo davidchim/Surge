@@ -431,10 +431,12 @@ func TestUpdate_DownloadRequestMsg(t *testing.T) {
 	// Setup initial model
 	ch := make(chan any, 100)
 	pool := download.NewWorkerPool(ch, 1)
+	svc := core.NewLocalDownloadServiceWithInput(pool, ch)
+	t.Cleanup(func() { _ = svc.Shutdown() })
 
 	m := RootModel{
 		Settings:    config.DefaultSettings(),
-		Service:     core.NewLocalDownloadServiceWithInput(pool, ch),
+		Service:     svc,
 		logViewport: viewport.New(40, 5),
 		list:        NewDownloadList(40, 10),
 		inputs:      []textinput.Model{textinput.New(), textinput.New(), textinput.New(), textinput.New()},
@@ -498,6 +500,52 @@ func TestUpdate_DownloadRequestMsg(t *testing.T) {
 	// Should remain in DashboardState (default) or whatever it was
 	if newRoot.state == ExtensionConfirmationState || newRoot.state == DuplicateWarningState {
 		t.Errorf("Expected no prompt state, got %v", newRoot.state)
+	}
+}
+
+func TestInferFilenameFromURL_RejectsDotAndDotDotQueryNames(t *testing.T) {
+	tests := []struct {
+		rawURL string
+		want   string
+	}{
+		{rawURL: "https://example.com/download?filename=.", want: "download"},
+		{rawURL: "https://example.com/download?filename=..", want: "download"},
+		{rawURL: "https://example.com/download?file=.", want: "download"},
+		{rawURL: "https://example.com/download?file=..", want: "download"},
+		{rawURL: "https://example.com/?filename=..", want: ""},
+	}
+
+	for _, tt := range tests {
+		if got := inferFilenameFromURL(tt.rawURL); got != tt.want {
+			t.Fatalf("inferFilenameFromURL(%q) = %q, want %q", tt.rawURL, got, tt.want)
+		}
+	}
+}
+
+func TestStartDownload_UsesProvidedIDWhenServiceSupportsIt(t *testing.T) {
+	ch := make(chan any, 16)
+	pool := download.NewWorkerPool(ch, 1)
+	svc := core.NewLocalDownloadServiceWithInput(pool, ch)
+	t.Cleanup(func() {
+		_ = svc.Shutdown()
+	})
+
+	m := RootModel{
+		Settings: config.DefaultSettings(),
+		Service:  svc,
+		list:     NewDownloadList(80, 20),
+		keys:     Keys,
+		inputs:   []textinput.Model{textinput.New(), textinput.New(), textinput.New(), textinput.New()},
+	}
+
+	requestID := "request-id-123"
+	updated, _ := m.startDownload("https://example.com/file.bin", nil, nil, t.TempDir(), false, "file.bin", requestID)
+
+	if len(updated.downloads) != 1 {
+		t.Fatalf("expected 1 queued download, got %d", len(updated.downloads))
+	}
+	if got := updated.downloads[0].ID; got != requestID {
+		t.Fatalf("queued download ID = %q, want %q", got, requestID)
 	}
 }
 

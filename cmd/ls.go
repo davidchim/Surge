@@ -22,7 +22,7 @@ var lsCmd = &cobra.Command{
 	Long:    `List all downloads from the running server or database. Optionally show details for a specific download by ID.`,
 	Args:    cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		initializeGlobalState()
+		mustInitializeGlobalState()
 
 		jsonOutput, _ := cmd.Flags().GetBool("json")
 		watch, _ := cmd.Flags().GetBool("watch")
@@ -228,6 +228,7 @@ func showDownloadDetails(partialID string, jsonOutput bool, baseURL string, toke
 	if found == nil {
 		fmt.Fprintf(os.Stderr, "Error: download not found: %s\n", partialID)
 		os.Exit(1)
+		return
 	}
 
 	var progress float64

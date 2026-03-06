@@ -6,12 +6,9 @@ import (
 
 // Size constants
 const (
-	KB = 1024
-	MB = 1024 * KB
-	GB = 1024 * MB
-
-	// Megabyte as float for display calculations
-	Megabyte = 1024.0 * 1024.0
+	KB = 1 << 10
+	MB = 1 << 20
+	GB = 1 << 30
 
 	// IncompleteSuffix is appended to files while downloading
 	IncompleteSuffix = ".surge"

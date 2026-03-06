@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,10 +22,10 @@ func completedSpeedMBps(entry types.DownloadEntry) float64 {
 		return 0
 	}
 	if entry.AvgSpeed > 0 {
-		return entry.AvgSpeed / (1024 * 1024)
+		return entry.AvgSpeed / float64(types.MB)
 	}
 	if entry.TimeTaken > 0 {
-		return float64(entry.TotalSize) * 1000 / float64(entry.TimeTaken) / (1024 * 1024)
+		return float64(entry.TotalSize) * 1000 / float64(entry.TimeTaken) / float64(types.MB)
 	}
 	return 0
 }
@@ -51,6 +52,7 @@ type LocalDownloadService struct {
 	listenerMu sync.Mutex
 
 	reportTicker *time.Ticker
+	reportWG     sync.WaitGroup
 
 	// Lifecycle
 	ctx    context.Context
@@ -102,7 +104,11 @@ func NewLocalDownloadServiceWithInput(pool *download.WorkerPool, inputCh chan in
 	// Start progress reporter
 	if pool != nil {
 		s.reportTicker = time.NewTicker(ReportInterval)
-		go s.reportProgressLoop()
+		s.reportWG.Add(1)
+		go func() {
+			defer s.reportWG.Done()
+			s.reportProgressLoop()
+		}()
 	}
 
 	return s
@@ -155,7 +161,17 @@ func (s *LocalDownloadService) reportProgressLoop() {
 	lastSpeeds := make(map[string]float64)
 	lastChunkSnapshot := make(map[string]time.Time)
 
-	for range s.reportTicker.C {
+	if s.reportTicker == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.reportTicker.C:
+		}
+
 		if s.Pool == nil {
 			continue
 		}
@@ -164,13 +180,13 @@ func (s *LocalDownloadService) reportProgressLoop() {
 		var batch events.BatchProgressMsg
 
 		activeConfigs := s.Pool.GetAll()
-			for _, cfg := range activeConfigs {
-				if cfg.State == nil || cfg.State.IsPaused() || cfg.State.Done.Load() {
-					// Clean up speed history for inactive
-					delete(lastSpeeds, cfg.ID)
-					delete(lastChunkSnapshot, cfg.ID)
-					continue
-				}
+		for _, cfg := range activeConfigs {
+			if cfg.State == nil || cfg.State.IsPaused() || cfg.State.Done.Load() {
+				// Clean up speed history for inactive
+				delete(lastSpeeds, cfg.ID)
+				delete(lastChunkSnapshot, cfg.ID)
+				continue
+			}
 
 			// Calculate Progress
 			downloaded, total, totalElapsed, sessionElapsed, connections, sessionStart := cfg.State.GetProgress()
@@ -201,18 +217,18 @@ func (s *LocalDownloadService) reportProgressLoop() {
 				ActiveConnections: int(connections),
 			}
 
-				// Chunk snapshots are expensive due to bitmap/progress copies.
-				// Send them at a lower cadence than scalar progress fields.
-				if time.Since(lastChunkSnapshot[cfg.ID]) >= 500*time.Millisecond {
-					bitmap, width, _, chunkSize, chunkProgress := cfg.State.GetBitmapSnapshot(true)
-					if width > 0 && len(bitmap) > 0 {
-						msg.ChunkBitmap = bitmap
-						msg.BitmapWidth = width
-						msg.ActualChunkSize = chunkSize
-						msg.ChunkProgress = chunkProgress
-						lastChunkSnapshot[cfg.ID] = time.Now()
-					}
+			// Chunk snapshots are expensive due to bitmap/progress copies.
+			// Send them at a lower cadence than scalar progress fields.
+			if time.Since(lastChunkSnapshot[cfg.ID]) >= 500*time.Millisecond {
+				bitmap, width, _, chunkSize, chunkProgress := cfg.State.GetBitmapSnapshot(true)
+				if width > 0 && len(bitmap) > 0 {
+					msg.ChunkBitmap = bitmap
+					msg.BitmapWidth = width
+					msg.ActualChunkSize = chunkSize
+					msg.ChunkProgress = chunkProgress
+					lastChunkSnapshot[cfg.ID] = time.Now()
 				}
+			}
 
 			batch = append(batch, msg)
 		}
@@ -220,6 +236,8 @@ func (s *LocalDownloadService) reportProgressLoop() {
 		// Send batch to InputCh (non-blocking) if not empty
 		if len(batch) > 0 {
 			select {
+			case <-s.ctx.Done():
+				return
 			case s.InputCh <- batch:
 			default:
 			}
@@ -307,6 +325,7 @@ func (s *LocalDownloadService) Shutdown() error {
 
 		// Stop listeners and broadcaster
 		s.cancel()
+		s.reportWG.Wait()
 
 		// Close input channel to stop broadcaster
 		if s.InputCh != nil {
@@ -361,12 +380,12 @@ func (s *LocalDownloadService) List() ([]types.DownloadStatus, error) {
 				if status.Status == "downloading" {
 					sessionDownloaded := downloaded - sessionStart
 					if sessionElapsed.Seconds() > 0 && sessionDownloaded > 0 {
-						status.Speed = float64(sessionDownloaded) / sessionElapsed.Seconds() / (1024 * 1024)
+						status.Speed = float64(sessionDownloaded) / sessionElapsed.Seconds() / float64(types.MB)
 
 						// Calculate ETA (seconds remaining)
 						remaining := status.TotalSize - status.Downloaded
 						if remaining > 0 && status.Speed > 0 {
-							speedBytes := status.Speed * 1024 * 1024
+							speedBytes := status.Speed * float64(types.MB)
 							status.ETA = int64(float64(remaining) / speedBytes)
 						}
 					}
@@ -421,6 +440,15 @@ func (s *LocalDownloadService) List() ([]types.DownloadStatus, error) {
 
 // Add queues a new download.
 func (s *LocalDownloadService) Add(url string, path string, filename string, mirrors []string, headers map[string]string) (string, error) {
+	return s.add(url, path, filename, mirrors, headers, "")
+}
+
+// AddWithID queues a new download using a caller-provided id when non-empty.
+func (s *LocalDownloadService) AddWithID(url string, path string, filename string, mirrors []string, headers map[string]string, id string) (string, error) {
+	return s.add(url, path, filename, mirrors, headers, id)
+}
+
+func (s *LocalDownloadService) add(url string, path string, filename string, mirrors []string, headers map[string]string, requestedID string) (string, error) {
 	if s.Pool == nil {
 		return "", fmt.Errorf("worker pool not initialized")
 	}
@@ -440,7 +468,18 @@ func (s *LocalDownloadService) Add(url string, path string, filename string, mir
 	}
 	outPath = utils.EnsureAbsPath(outPath)
 
-	id := uuid.New().String()
+	id := strings.TrimSpace(requestedID)
+	if id == "" {
+		id = uuid.New().String()
+	}
+	if st := s.Pool.GetStatus(id); st != nil {
+		return "", fmt.Errorf("download id already exists")
+	}
+	if entry, err := state.GetDownload(id); err != nil {
+		return "", fmt.Errorf("failed to query download state: %w", err)
+	} else if entry != nil {
+		return "", fmt.Errorf("download id already exists")
+	}
 
 	// Create configuration
 	state := types.NewProgressState(id, 0)

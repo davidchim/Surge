@@ -168,6 +168,11 @@ func computeFileHashMD5WithTimeout(path string, timeout time.Duration) (string, 
 	if timeout <= 0 {
 		timeout = DefaultInlineHashTimeout
 	}
+	// Guard against sub-timer-resolution deadlines that can behave nondeterministically
+	// across platforms (especially on Windows). These effectively mean "skip hashing".
+	if timeout < time.Microsecond {
+		return "", true, nil
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -176,7 +181,7 @@ func computeFileHashMD5WithTimeout(path string, timeout time.Duration) (string, 
 	defer func() { _ = f.Close() }()
 
 	h := md5.New()
-	buf := make([]byte, 1024*1024)
+	buf := make([]byte, types.MB)
 	deadline := time.Now().Add(timeout)
 
 	for {
@@ -471,7 +476,7 @@ func RemoveFromMasterList(id string) error {
 func GetDownload(id string) (*types.DownloadEntry, error) {
 	db := getDBHelper()
 	if db == nil {
-		return nil, fmt.Errorf("database not initialized")
+		return nil, nil // No database means no stored entry
 	}
 
 	var e types.DownloadEntry

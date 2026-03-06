@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+
+	"github.com/surge-downloader/surge/internal/engine/types"
 )
 
 // BenchmarkMetrics collects performance metrics during download
@@ -94,7 +96,11 @@ func (bm *BenchmarkMetrics) GetResults() BenchmarkResults {
 
 	throughput := float64(0)
 	if elapsed.Seconds() > 0 {
-		throughput = float64(bm.TotalBytes) / elapsed.Seconds() / (1024 * 1024)
+		throughput = float64(bm.TotalBytes) / elapsed.Seconds() / float64(types.MB)
+	}
+	memDelta := uint64(0)
+	if bm.PeakMemAlloc >= bm.StartMemAlloc {
+		memDelta = bm.PeakMemAlloc - bm.StartMemAlloc
 	}
 
 	return BenchmarkResults{
@@ -105,7 +111,7 @@ func (bm *BenchmarkMetrics) GetResults() BenchmarkResults {
 		RetryCount:     int(bm.RetryCount.Load()),
 		MaxConnections: int(bm.ConnectionMax.Load()),
 		AvgConnections: avgConnections,
-		MemoryUsedMB:   float64(bm.PeakMemAlloc-bm.StartMemAlloc) / (1024 * 1024),
+		MemoryUsedMB:   float64(memDelta) / float64(types.MB),
 	}
 }
 
@@ -151,7 +157,7 @@ func formatInt(i int) string {
 }
 
 func formatBytes(b int64) string {
-	const unit = 1024
+	const unit = types.KB
 	if b < unit {
 		return sprintf("%d B", b)
 	}

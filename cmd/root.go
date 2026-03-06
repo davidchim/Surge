@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -84,8 +85,6 @@ var rootCmd = &cobra.Command{
 			return
 		}
 
-		initializeGlobalState()
-
 		// Attempt to acquire lock
 		isMaster, err := AcquireLock()
 		if err != nil {
@@ -103,6 +102,8 @@ var rootCmd = &cobra.Command{
 				utils.Debug("Error releasing lock: %v", err)
 			}
 		}()
+
+		mustInitializeGlobalState()
 
 		startupIntegrityMessage = runStartupIntegrityCheck()
 
@@ -646,35 +647,35 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 				utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", req.URL, isDuplicate)
 
 				// Send request to TUI
-					if err := service.Publish(events.DownloadRequestMsg{
-						ID:       downloadID,
-						URL:      urlForAdd,
+				if err := service.Publish(events.DownloadRequestMsg{
+					ID:       downloadID,
+					URL:      urlForAdd,
 					Filename: req.Filename,
 					Path:     outPath, // Use the path we resolved (default or requested)
 					Mirrors:  mirrorsForAdd,
 					Headers:  req.Headers,
-					}); err != nil {
-						http.Error(w, "Failed to notify TUI: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
+				}); err != nil {
+					http.Error(w, "Failed to notify TUI: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
 
-					// Return 202 Accepted to indicate it's pending approval
-					writeJSONResponse(w, http.StatusAccepted, map[string]string{
-						"status":  "pending_approval",
-						"message": "Download request sent to TUI for confirmation",
-						"id":      downloadID, // ID might change if user modifies it, but useful for tracking
+				// Return 202 Accepted to indicate it's pending approval
+				writeJSONResponse(w, http.StatusAccepted, map[string]string{
+					"status":  "pending_approval",
+					"message": "Download request sent to TUI for confirmation",
+					"id":      downloadID, // ID might change if user modifies it, but useful for tracking
+				})
+				return
+			} else {
+				// Headless mode check
+				if settings.General.ExtensionPrompt || (settings.General.WarnOnDuplicate && isDuplicate) {
+					writeJSONResponse(w, http.StatusConflict, map[string]string{
+						"status":  "error",
+						"message": "Download rejected: Duplicate download or approval required (Headless mode)",
 					})
 					return
-				} else {
-					// Headless mode check
-					if settings.General.ExtensionPrompt || (settings.General.WarnOnDuplicate && isDuplicate) {
-						writeJSONResponse(w, http.StatusConflict, map[string]string{
-							"status":  "error",
-							"message": "Download rejected: Duplicate download or approval required (Headless mode)",
-						})
-						return
-					}
 				}
+			}
 		}
 	}
 
@@ -793,22 +794,30 @@ func init() {
 	rootCmd.SetVersionTemplate("Surge v{{.Version}}\n")
 }
 
-// initializeGlobalState sets up the environment and configures the engine state and logging
-func initializeGlobalState() {
-	// Attempt migration first (Linux only)
-	if err := config.MigrateOldPaths(); err != nil {
-		fmt.Fprintf(os.Stderr, "Migration warning: %v\n", err)
+func mustInitializeGlobalState() {
+	if err := initializeGlobalState(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
+}
+
+// initializeGlobalState sets up the environment and configures the engine state and logging
+func initializeGlobalState() error {
 
 	stateDir := config.GetStateDir()
 	logsDir := config.GetLogsDir()
+	stateDBPath := filepath.Join(stateDir, "surge.db")
+
+	if err := migrateLegacyStateDB(stateDBPath); err != nil {
+		return fmt.Errorf("state DB migration failed: %w", err)
+	}
 
 	// Ensure directories exist
 	_ = os.MkdirAll(stateDir, 0o755)
 	_ = os.MkdirAll(logsDir, 0o755)
 
 	// Config engine state
-	state.Configure(filepath.Join(stateDir, "surge.db"))
+	state.Configure(stateDBPath)
 
 	// Config logging
 	utils.ConfigureDebug(logsDir)
@@ -822,6 +831,105 @@ func initializeGlobalState() {
 		retention = config.DefaultSettings().General.LogRetentionCount
 	}
 	utils.CleanupLogs(retention)
+	return nil
+}
+
+func migrateLegacyStateDB(stateDBPath string) error {
+	if stateDBPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(stateDBPath); err == nil {
+		return nil
+	}
+
+	legacyCandidates := []string{
+		filepath.Join(config.GetSurgeDir(), "state", "surge.db"),
+		filepath.Join(config.GetSurgeDir(), "surge.db"),
+	}
+
+	for _, legacyPath := range legacyCandidates {
+		if legacyPath == "" {
+			continue
+		}
+		if samePath(stateDBPath, legacyPath) {
+			continue
+		}
+		if _, err := os.Stat(legacyPath); err != nil {
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(stateDBPath), 0o755); err != nil {
+			utils.Debug("Failed to create state dir for DB migration: %v", err)
+			return err
+		}
+
+		if err := moveFileWithFallback(legacyPath, stateDBPath); err != nil {
+			utils.Debug("Failed to migrate legacy DB from %s to %s: %v", legacyPath, stateDBPath, err)
+			continue
+		}
+
+		for _, suffix := range []string{"-wal", "-shm"} {
+			srcSidecar := legacyPath + suffix
+			dstSidecar := stateDBPath + suffix
+			if err := moveFileWithFallback(srcSidecar, dstSidecar); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				utils.Debug("Failed to migrate legacy DB sidecar %s from %s to %s: %v", suffix, legacyPath, stateDBPath, err)
+				return err
+			}
+		}
+
+		utils.Debug("Migrated legacy state DB from %s to %s", legacyPath, stateDBPath)
+		return nil
+	}
+	return nil
+}
+
+func moveFileWithFallback(src, dst string) error {
+	if src == "" || dst == "" {
+		return fmt.Errorf("invalid migration path")
+	}
+
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = srcFile.Close()
+	}()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode().Perm())
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		_ = dstFile.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := dstFile.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+
+	return os.Remove(src)
+}
+
+func samePath(a, b string) bool {
+	cleanA := filepath.Clean(a)
+	cleanB := filepath.Clean(b)
+	return cleanA == cleanB
 }
 
 func resumePausedDownloads() {
