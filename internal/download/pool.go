@@ -103,6 +103,9 @@ func resolveDestPath(cfg *types.DownloadConfig) string {
 
 // Add adds a new download task to the pool
 func (p *WorkerPool) Add(cfg types.DownloadConfig) {
+	if cfg.ProgressCh == nil {
+		cfg.ProgressCh = p.progressCh
+	}
 	p.mu.Lock()
 	p.queued[cfg.ID] = cfg
 	p.mu.Unlock()
@@ -205,16 +208,8 @@ func (p *WorkerPool) Pause(downloadID string) bool {
 		ad.cancel()
 	}
 
-	// Send pause message
-	downloaded := int64(0)
-	if ad.config.State != nil {
-		downloaded = ad.config.State.VerifiedProgress.Load()
-	}
-	p.trySendProgress(events.DownloadPausedMsg{
-		DownloadID: downloadID,
-		Filename:   ad.config.Filename,
-		Downloaded: downloaded,
-	})
+	// Send pause message is now exclusively handled by worker return paths
+	// to ensure fully synchronized byte counts.
 	return true
 }
 
@@ -253,8 +248,12 @@ func (p *WorkerPool) Cancel(downloadID string) {
 	}
 
 	removedFilename := ""
+	removedDestPath := ""
+	removedCompleted := false
 	if activeExists && ad != nil {
 		removedFilename = ad.config.Filename
+		removedDestPath = resolveDestPath(&ad.config)
+		removedCompleted = ad.config.State != nil && ad.config.State.Done.Load()
 
 		// Cancel the context to stop workers
 		if ad.cancel != nil {
@@ -274,12 +273,15 @@ func (p *WorkerPool) Cancel(downloadID string) {
 		}
 	} else if queuedExists {
 		removedFilename = qCfg.Filename
+		removedDestPath = resolveDestPath(&qCfg)
 	}
 
 	// Send removal message
 	p.trySendProgress(events.DownloadRemovedMsg{
 		DownloadID: downloadID,
 		Filename:   removedFilename,
+		DestPath:   removedDestPath,
+		Completed:  removedCompleted,
 	})
 }
 

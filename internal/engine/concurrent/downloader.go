@@ -240,9 +240,7 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 			}
 			// Copy headers from original request to redirect request
 			if len(via) > 0 {
-				for key, vals := range via[0].Header {
-					req.Header[key] = vals
-				}
+				utils.CopyRedirectHeaders(req, via[0])
 			}
 			return nil
 		},

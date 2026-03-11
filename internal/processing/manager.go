@@ -30,6 +30,8 @@ type LifecycleManager struct {
 	addFunc             AddDownloadFunc
 	addWithIDFunc       AddDownloadWithIDFunc
 	isNameActive        IsNameActiveFunc
+	engineHooks         EngineHooks
+	hooksMu             sync.RWMutex
 }
 
 const maxWorkingFileReservationAttempts = 100
@@ -83,6 +85,21 @@ func NewLifecycleManager(addFunc AddDownloadFunc, addWithIDFunc AddDownloadWithI
 		addWithIDFunc:       addWithIDFunc,
 		isNameActive:        activeCheck,
 	}
+}
+
+// SetEngineHooks injects dependencies the manager needs to interact with the broader system
+// (like the download worker pool or the event system) without causing cyclic dependency graphs.
+func (mgr *LifecycleManager) SetEngineHooks(hooks EngineHooks) {
+	mgr.hooksMu.Lock()
+	defer mgr.hooksMu.Unlock()
+	mgr.engineHooks = hooks
+}
+
+// getEngineHooks safely returns the current engine hooks.
+func (mgr *LifecycleManager) getEngineHooks() EngineHooks {
+	mgr.hooksMu.RLock()
+	defer mgr.hooksMu.RUnlock()
+	return mgr.engineHooks
 }
 
 // GetSettings reloads disk-backed routing rules opportunistically so a long-lived

@@ -12,6 +12,7 @@ import (
 	"github.com/surge-downloader/surge/internal/download"
 	"github.com/surge-downloader/surge/internal/engine/state"
 	"github.com/surge-downloader/surge/internal/engine/types"
+	"github.com/surge-downloader/surge/internal/processing"
 )
 
 func TestCmd_AutoResume_Execution(t *testing.T) {
@@ -79,7 +80,22 @@ func TestCmd_AutoResume_Execution(t *testing.T) {
 	GlobalProgressCh = make(chan any, 10)
 	GlobalPool = download.NewWorkerPool(GlobalProgressCh, 4)
 	GlobalService = core.NewLocalDownloadServiceWithInput(GlobalPool, GlobalProgressCh)
-	defer func() { _ = GlobalService.Shutdown() }()
+
+	GlobalLifecycle = processing.NewLifecycleManager(nil, nil, nil)
+	GlobalLifecycle.SetEngineHooks(processing.EngineHooks{
+		Pause:        GlobalPool.Pause,
+		Resume:       GlobalPool.Resume,
+		AddConfig:    GlobalPool.Add,
+		GetStatus:    GlobalPool.GetStatus,
+		PublishEvent: GlobalService.Publish,
+	})
+	if svc, ok := GlobalService.(*core.LocalDownloadService); ok {
+		svc.SetLifecycleHooks(GlobalLifecycle.Pause, GlobalLifecycle.Resume, GlobalLifecycle.ResumeBatch)
+	}
+	defer func() {
+		_ = GlobalService.Shutdown()
+		GlobalLifecycle = nil
+	}()
 
 	// 6. Call the function
 	resumePausedDownloads()

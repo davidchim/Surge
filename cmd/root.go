@@ -201,10 +201,28 @@ func lifecycleForLocalService(service core.DownloadService) (*processing.Lifecyc
 
 func ensureGlobalLocalServiceAndLifecycle() error {
 	if GlobalService == nil {
-		GlobalService = core.NewLocalDownloadServiceWithInput(GlobalPool, GlobalProgressCh)
+		localService := core.NewLocalDownloadServiceWithInput(GlobalPool, GlobalProgressCh)
+		GlobalService = localService
+
+		lifecycle, err := ensureLocalLifecycle(localService, currentPoolConfigs)
+		if err != nil {
+			return err
+		}
+
+		lifecycle.SetEngineHooks(processing.EngineHooks{
+			Pause:        GlobalPool.Pause,
+			Resume:       GlobalPool.Resume,
+			GetStatus:    GlobalPool.GetStatus,
+			AddConfig:    GlobalPool.Add,
+			PublishEvent: localService.Publish,
+		})
+
+		localService.SetLifecycleHooks(lifecycle.Pause, lifecycle.Resume, lifecycle.ResumeBatch)
+	} else {
+		_, err := ensureLocalLifecycle(GlobalService, currentPoolConfigs)
+		return err
 	}
-	_, err := ensureLocalLifecycle(GlobalService, currentPoolConfigs)
-	return err
+	return nil
 }
 
 func publishSystemLog(message string) {

@@ -66,9 +66,7 @@ func newSingleClient(runtime *types.RuntimeConfig) *http.Client {
 				return fmt.Errorf("stopped after 10 redirects")
 			}
 			if len(via) > 0 {
-				for key, vals := range via[0].Header {
-					req.Header[key] = vals
-				}
+				utils.CopyRedirectHeaders(req, via[0])
 			}
 			return nil
 		},

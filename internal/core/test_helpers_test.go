@@ -31,6 +31,15 @@ func startEventWorkerForTest(t *testing.T, svc *LocalDownloadService) func() {
 		mgr.StartEventWorker(stream)
 	}()
 
+	svc.SetLifecycleHooks(mgr.Pause, mgr.Resume, mgr.ResumeBatch)
+	mgr.SetEngineHooks(processing.EngineHooks{
+		Pause:        svc.Pool.Pause,
+		Resume:       svc.Pool.Resume,
+		GetStatus:    svc.Pool.GetStatus,
+		AddConfig:    svc.Pool.Add,
+		PublishEvent: svc.Publish,
+	})
+
 	return func() {
 		cleanup() // closes the channel, causing StartEventWorker to exit
 		wg.Wait() // wait for all DB writes to complete
