@@ -35,6 +35,9 @@ func InitializeTUI() {
 	components.InitializeStatusCache()
 }
 
+// IsTestMode is set by tests to avoid blocking calls to terminal interrogation
+var IsTestMode bool
+
 type UIState int // Defines UIState as int to be used in rootModel
 
 const (
@@ -58,6 +61,7 @@ const (
 	BugReportSystemDetailsState
 	BugReportLogPathState
 	CategoryResetConfirmState
+	SpeedLimitsState
 	PurgeConfirmState
 )
 
@@ -88,6 +92,8 @@ type DownloadModel struct {
 	Downloaded    int64
 	Speed         float64
 	Connections   int
+	RateLimit     int64 // Speed limit in bytes/sec
+	RateLimitSet  bool  // Whether RateLimit is an explicit per-download override
 
 	StartTime time.Time
 	Elapsed   time.Duration
@@ -108,14 +114,15 @@ type DownloadModel struct {
 }
 
 type RootModel struct {
-	downloads    []*DownloadModel
-	width        int
-	height       int
-	state        UIState
-	activeTab    int // 0=Queued, 1=Active, 2=Done
-	pinnedTab    int // -1=None, 0=Queued, 1=Active, 2=Done
-	inputs       []textinput.Model
-	focusedInput int
+	downloads     []*DownloadModel
+	width         int
+	height        int
+	state         UIState
+	activeTab     int // 0=Queued, 1=Active, 2=Done
+	pinnedTab     int // -1=None, 0=Queued, 1=Active, 2=Done
+	inputs        []textinput.Model
+	focusedInput  int
+	purgeTargetID string
 	// Service Interface
 	// Core
 	Service      core.DownloadService
@@ -164,6 +171,11 @@ type RootModel struct {
 	settingsError         string           // Current validation error in settings
 	ExtensionTokenCopied  bool             // Flash message for "Token Copied!"
 
+	// Speed Limits Modal
+	speedLimitsCursor    int
+	speedLimitsIsEditing bool
+	speedLimitsError     string
+
 	// Selection persistence
 	SelectedDownloadID string // ID of the currently selected download
 	ManualTabSwitch    bool   // Whether the last tab switch was manual
@@ -193,9 +205,6 @@ type RootModel struct {
 	catMgrError     string             // Error message for display in category manager
 	// Quit confirm button focus (0 = Yep!, 1 = Nope)
 	quitConfirmFocused int
-
-	// Purge confirm: ID of download pending file deletion
-	purgeTargetID string
 
 	// Bug report flow context
 	bugReportIncludeSystemInfo bool
@@ -251,7 +260,10 @@ func NewDownloadModel(id string, url string, filename string, total int64) *Down
 }
 
 func InitialRootModel(serverPort int, currentVersion string, service core.DownloadService, orchestrator *processing.LifecycleManager, noResume bool, currentCommit ...string) RootModel {
-	initialDarkBackground := lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
+	initialDarkBackground := true
+	if !IsTestMode {
+		initialDarkBackground = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
+	}
 	commitValue := "unknown"
 	if len(currentCommit) > 0 {
 		if trimmed := strings.TrimSpace(currentCommit[0]); trimmed != "" {
@@ -388,6 +400,8 @@ func InitialRootModel(serverPort int, currentVersion string, service core.Downlo
 				if s.Status == "completed" && s.TimeTaken > 0 {
 					dm.Elapsed = time.Duration(s.TimeTaken) * time.Millisecond
 				}
+				dm.RateLimit = s.RateLimit
+				dm.RateLimitSet = s.RateLimitSet
 
 				downloads = append(downloads, dm)
 			}

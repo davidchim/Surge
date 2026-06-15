@@ -301,7 +301,6 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		}
 
 		if readSoFar > 0 {
-
 			// check stopAt again before writing
 			// truncate readSoFar
 			currentStopAt := activeTask.StopAt.Load()
@@ -310,6 +309,21 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				if readSoFar <= 0 {
 					return nil // stolen completely
 				}
+			}
+
+			if d.Limiter != nil {
+				// Reset stall clock before the wait so the health monitor measures
+				// time from when throttling begins, not from the last network read.
+				activeTask.LastActivity.Store(time.Now().UnixNano())
+				activeTask.WaitingOnLimiter.Store(true)
+				err := d.Limiter.WaitN(ctx, int64(readSoFar))
+				activeTask.WaitingOnLimiter.Store(false)
+				if err != nil {
+					return err
+				}
+
+				// Refresh again after the wait to keep the stall clock current.
+				activeTask.LastActivity.Store(time.Now().UnixNano())
 			}
 
 			_, writeErr := file.WriteAt(buf[:readSoFar], offset)

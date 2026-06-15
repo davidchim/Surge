@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,103 @@ func TestDefaultSettings_Consistency(t *testing.T) {
 
 	if Resolve[int](s1.Network.MaxConnectionsPerDownload) != Resolve[int](s2.Network.MaxConnectionsPerDownload) {
 		t.Error("Default settings should be consistent")
+	}
+}
+
+func TestDefaultSettings_Validation(t *testing.T) {
+	settings := DefaultSettings()
+	for _, cat := range settings.CategoriesList {
+		for _, s := range cat.Settings {
+			if s.ValidateFunc != nil {
+				if err := s.ValidateFunc(s.DefaultValue); err != nil {
+					t.Errorf("Validation failed for default value of %s: %v", s.Key, err)
+				}
+				if err := s.ValidateFunc(s.Value); err != nil {
+					t.Errorf("Validation failed for current value of %s: %v", s.Key, err)
+				}
+			}
+		}
+	}
+}
+
+// TestEveryValidatorIsInCategoriesList prevents a setting from being defined with a
+// ValidateFunc but accidentally omitted from initializeCategoriesList, which would
+// silently skip validation on startup.
+func TestEveryValidatorIsInCategoriesList(t *testing.T) {
+	settings := DefaultSettings()
+
+	var allSettings []*Setting
+	var collect func(v reflect.Value)
+	collect = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			if v.Type() == reflect.TypeOf((*Setting)(nil)) {
+				allSettings = append(allSettings, v.Interface().(*Setting))
+				return
+			}
+			collect(v.Elem())
+		case reflect.Struct:
+			for i := range v.NumField() {
+				collect(v.Field(i))
+			}
+		case reflect.Slice:
+			for i := range v.Len() {
+				collect(v.Index(i))
+			}
+		}
+	}
+	collect(reflect.ValueOf(settings))
+
+	validated := make(map[*Setting]struct{})
+	for _, s := range allSettings {
+		if s != nil && s.ValidateFunc != nil {
+			validated[s] = struct{}{}
+		}
+	}
+
+	inCategories := make(map[*Setting]struct{})
+	for _, cat := range settings.CategoriesList {
+		for _, s := range cat.Settings {
+			if s != nil {
+				inCategories[s] = struct{}{}
+			}
+		}
+	}
+
+	for s := range validated {
+		if _, ok := inCategories[s]; !ok {
+			t.Errorf("Setting %q has a ValidateFunc but is missing from CategoriesList", s.Key)
+		}
+	}
+}
+
+func TestCategoriesListMatchesCategoryOrder(t *testing.T) {
+	settings := DefaultSettings()
+	order := CategoryOrder()
+
+	// 1. Verify every category in CategoriesList is present in CategoryOrder
+	orderMap := make(map[string]bool)
+	for _, name := range order {
+		orderMap[name] = true
+	}
+	for _, cat := range settings.CategoriesList {
+		if !orderMap[cat.Name] {
+			t.Errorf("Category %q is in CategoriesList but missing from CategoryOrder()", cat.Name)
+		}
+	}
+
+	// 2. Verify every category in CategoryOrder is present in CategoriesList
+	listMap := make(map[string]bool)
+	for _, cat := range settings.CategoriesList {
+		listMap[cat.Name] = true
+	}
+	for _, name := range order {
+		if !listMap[name] {
+			t.Errorf("Category %q is in CategoryOrder() but missing from CategoriesList", name)
+		}
 	}
 }
 
@@ -273,7 +371,9 @@ func TestSettingsJSON_Serialization(t *testing.T) {
 }
 
 func TestSaveSettings_RealFunction(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("APPDATA", tmpDir)
 	original := DefaultSettings()
 	original.Network.MaxConnectionsPerDownload.Value = 48
 	original.General.AutoResume.Value = true

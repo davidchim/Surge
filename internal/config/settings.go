@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,8 @@ type NetworkSettings struct {
 	MinChunkSize              *Setting `json:"min_chunk_size"`
 	WorkerBufferSize          *Setting `json:"worker_buffer_size"`
 	DialHedgeCount            *Setting `json:"dial_hedge_count"`
+	GlobalRateLimit           *Setting `json:"global_rate_limit"`
+	DefaultDownloadRateLimit  *Setting `json:"default_download_rate_limit"`
 }
 
 type PerformanceSettings struct {
@@ -250,8 +253,11 @@ func (s *Settings) initializeCategoriesList() {
 				s.Network.MinChunkSize,
 				s.Network.WorkerBufferSize,
 				s.Network.DialHedgeCount,
+				s.Network.GlobalRateLimit,
+				s.Network.DefaultDownloadRateLimit,
 			},
 		},
+
 		{
 			Name: "Performance",
 			Settings: []*Setting{
@@ -366,11 +372,15 @@ func GetSettingsMetadata() map[string][]SettingMeta {
 	return cachedSettingsMetadata
 }
 
-var categoryOrder = []string{"General", "Network", "Performance", "Categories", "Extension"}
-
 // CategoryOrder returns the display order of settings categories.
 func CategoryOrder() []string {
-	return categoryOrder
+	return []string{
+		"General",
+		"Network",
+		"Performance",
+		"Categories",
+		"Extension",
+	}
 }
 
 const (
@@ -725,6 +735,30 @@ func DefaultSettings() *Settings {
 					return nil
 				},
 			},
+			GlobalRateLimit: &Setting{
+				Key:          "global_rate_limit",
+				Label:        "Global Rate Limit",
+				Description:  "Cap total download bandwidth (e.g., 10MB/s, 80Mbps). Use 0 to disable.",
+				Type:         "string",
+				DefaultValue: "0",
+				Value:        "0",
+				ValidateFunc: func(val any) error {
+					_, err := utils.ParseRateLimitValue(val)
+					return err
+				},
+			},
+			DefaultDownloadRateLimit: &Setting{
+				Key:          "default_download_rate_limit",
+				Label:        "Default Download Rate Limit",
+				Description:  "Default cap per download (e.g., 2MB/s). Use 0 to disable.",
+				Type:         "string",
+				DefaultValue: "0",
+				Value:        "0",
+				ValidateFunc: func(val any) error {
+					_, err := utils.ParseRateLimitValue(val)
+					return err
+				},
+			},
 		},
 		Performance: PerformanceSettings{
 			MaxTaskRetries: &Setting{
@@ -993,20 +1027,37 @@ func SaveSettings(s *Settings) error {
 
 // ToRuntimeConfig creates the engine runtime config from validated settings.
 func (s *Settings) ToRuntimeConfig() *types.RuntimeConfig {
+	var globalRate, defaultRate int64
+	if s.Network.GlobalRateLimit != nil {
+		var err error
+		globalRate, err = utils.ParseRateLimitValue(s.Network.GlobalRateLimit.Value)
+		if err != nil {
+			globalRate, _ = utils.ParseRateLimitValue(s.Network.GlobalRateLimit.DefaultValue)
+		}
+	}
+	if s.Network.DefaultDownloadRateLimit != nil {
+		var err error
+		defaultRate, err = utils.ParseRateLimitValue(s.Network.DefaultDownloadRateLimit.Value)
+		if err != nil {
+			defaultRate, _ = utils.ParseRateLimitValue(s.Network.DefaultDownloadRateLimit.DefaultValue)
+		}
+	}
 	return &types.RuntimeConfig{
-		MaxConnectionsPerDownload: Resolve[int](s.Network.MaxConnectionsPerDownload),
-		UserAgent:                 Resolve[string](s.Network.UserAgent),
-		ProxyURL:                  Resolve[string](s.Network.ProxyURL),
-		CustomDNS:                 Resolve[string](s.Network.CustomDNS),
-		SequentialDownload:        Resolve[bool](s.Network.SequentialDownload),
-		MinChunkSize:              Resolve[int64](s.Network.MinChunkSize),
-		WorkerBufferSize:          Resolve[int](s.Network.WorkerBufferSize),
-		DialHedgeCount:            Resolve[int](s.Network.DialHedgeCount),
-		MaxTaskRetries:            Resolve[int](s.Performance.MaxTaskRetries),
-		SlowWorkerThreshold:       Resolve[float64](s.Performance.SlowWorkerThreshold),
-		SlowWorkerGracePeriod:     Resolve[time.Duration](s.Performance.SlowWorkerGracePeriod),
-		StallTimeout:              Resolve[time.Duration](s.Performance.StallTimeout),
-		SpeedEmaAlpha:             Resolve[float64](s.Performance.SpeedEmaAlpha),
+		MaxConnectionsPerDownload:   Resolve[int](s.Network.MaxConnectionsPerDownload),
+		UserAgent:                   Resolve[string](s.Network.UserAgent),
+		ProxyURL:                    Resolve[string](s.Network.ProxyURL),
+		CustomDNS:                   Resolve[string](s.Network.CustomDNS),
+		SequentialDownload:          Resolve[bool](s.Network.SequentialDownload),
+		MinChunkSize:                Resolve[int64](s.Network.MinChunkSize),
+		GlobalRateLimitBps:          globalRate,
+		DefaultDownloadRateLimitBps: defaultRate,
+		WorkerBufferSize:            Resolve[int](s.Network.WorkerBufferSize),
+		DialHedgeCount:              Resolve[int](s.Network.DialHedgeCount),
+		MaxTaskRetries:              Resolve[int](s.Performance.MaxTaskRetries),
+		SlowWorkerThreshold:         Resolve[float64](s.Performance.SlowWorkerThreshold),
+		SlowWorkerGracePeriod:       Resolve[time.Duration](s.Performance.SlowWorkerGracePeriod),
+		StallTimeout:                Resolve[time.Duration](s.Performance.StallTimeout),
+		SpeedEmaAlpha:               Resolve[float64](s.Performance.SpeedEmaAlpha),
 	}
 }
 
